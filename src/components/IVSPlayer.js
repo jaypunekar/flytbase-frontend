@@ -48,6 +48,7 @@ const IVSPlayer = ({ streamUrl, height = '300px', width = '100%' }) => {
   const [fallbackToIframe, setFallbackToIframe] = useState(false);
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Preparing stream player...');
+  const [player, setPlayer] = useState(null);
 
   // Set up global error handler to catch cross-origin script errors
   useEffect(() => {
@@ -88,59 +89,56 @@ const IVSPlayer = ({ streamUrl, height = '300px', width = '100%' }) => {
 
   // Load the IVS player script
   useEffect(() => {
+    // Load IVS Player script
     const loadScript = () => {
       return new Promise((resolve, reject) => {
         if (window.IVSPlayer) {
-          console.log('IVS Player already loaded');
-          setScriptLoaded(true);
-          resolve(window.IVSPlayer);
+          resolve();
           return;
         }
 
-        // Remove any existing script to avoid duplicates
-        const existingScript = document.querySelector('script[src*="amazon-ivs-player"]');
-        if (existingScript) {
-          document.body.removeChild(existingScript);
-        }
-
-        setLoadingMessage('Loading video player...');
-        console.log('Loading IVS Player script...');
         const script = document.createElement('script');
-        script.src = 'https://player.live-video.net/1.20.0/amazon-ivs-player.min.js';
+        script.src = 'https://player.live-video.net/1.24.0/amazon-ivs-player.min.js';
         script.async = true;
-        script.crossOrigin = 'anonymous';
-        
-        // Add more attributes to improve cross-origin behavior
-        script.integrity = ''; // If Amazon provides an integrity hash, add it here
-        
         script.onload = () => {
           console.log('IVS Player script loaded successfully');
-          setScriptLoaded(true);
-          resolve(window.IVSPlayer);
+          resolve();
         };
-        
-        script.onerror = (e) => {
-          console.error('Failed to load IVS Player script:', e);
-          setFallbackToIframe(true);
-          reject(e);
+        script.onerror = (error) => {
+          console.error('Failed to load IVS Player script:', error);
+          reject(new Error('Failed to load IVS Player script'));
         };
-        
-        document.body.appendChild(script);
+        document.head.appendChild(script);
       });
     };
 
-    // Use try-catch to handle any script loading errors
-    try {
-      loadScript().catch(err => {
-        console.error('Script loading error:', err);
-        setError('Failed to load video player');
-        setIsLoading(false);
-      });
-    } catch (err) {
-      console.error('Unexpected error during script loading:', err);
-      setFallbackToIframe(true);
-      setIsLoading(false);
-    }
+    const initializePlayer = async () => {
+      try {
+        await loadScript();
+        if (!window.IVSPlayer) {
+          throw new Error('IVS Player not available after script load');
+        }
+
+        const player = window.IVSPlayer.create();
+        if (!player) {
+          throw new Error('Failed to create IVS Player instance');
+        }
+
+        setPlayer(player);
+        console.log('IVS Player initialized successfully');
+      } catch (error) {
+        console.error('Error initializing IVS Player:', error);
+        setError(error.message);
+      }
+    };
+
+    initializePlayer();
+
+    return () => {
+      if (player) {
+        player.delete();
+      }
+    };
   }, []);
 
   // Setup player when streamUrl changes or script loads

@@ -177,9 +177,6 @@ export default function Streams() {
   const [isEditingUrl, setIsEditingUrl] = useState(false);
   const [editedUrl, setEditedUrl] = useState('');
 
-  // Add state for chat loading indicator
-  const [isChatLoading, setIsChatLoading] = useState(false);
-
   // Load streams on mount
   useEffect(() => {
     fetchStreams();
@@ -468,9 +465,6 @@ export default function Streams() {
     setDialogChatMessages([...dialogChatMessages, userMessage]);
     setDialogChatInput('');
     
-    // Set loading state to true before making API call
-    setIsChatLoading(true);
-    
     try {
       const response = await api.post(`/stream/${selectedStream.stream_id}/chat`, {
         query: dialogChatInput
@@ -486,9 +480,6 @@ export default function Streams() {
         ...prev,
         { sender: 'bot', text: 'Sorry, I encountered an error while processing your question.' }
       ]);
-    } finally {
-      // Set loading state to false after API call completes
-      setIsChatLoading(false);
     }
   };
 
@@ -868,16 +859,16 @@ export default function Streams() {
                     placeholder="Ask about what's happening in the stream..."
                     variant="outlined"
                     size="small"
-                    disabled={selectedStream.status !== 'active' || isChatLoading}
+                    disabled={selectedStream.status !== 'active'}
                   />
                   <Button
                     type="submit"
                     variant="contained"
-                    disabled={!dialogChatInput.trim() || selectedStream.status !== 'active' || isChatLoading}
-                    endIcon={isChatLoading ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
+                    disabled={!dialogChatInput.trim() || selectedStream.status !== 'active'}
+                    endIcon={<SendIcon />}
                     sx={{ ml: 1 }}
                   >
-                    {isChatLoading ? 'Thinking' : 'Send'}
+                    Send
                   </Button>
                 </Box>
                 {selectedStream.status !== 'active' && (

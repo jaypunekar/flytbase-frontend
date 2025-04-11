@@ -126,14 +126,8 @@ export default function Dashboard() {
   const [isUploading, setIsUploading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStatus, setAnalysisStatus] = useState(null);
-  
-  // Single chatbot state instead of three
-  const [messages, setMessages] = useState([
-    { text: "Hello! I can help analyze your video content. Upload a video to get started.", sender: 'bot' }
-  ]);
+  const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
-  const [isChatLoading, setIsChatLoading] = useState(false);
-  
   const [error, setError] = useState(null);
   const [processingLogs, setProcessingLogs] = useState([]);
   const [currentVideoId, setCurrentVideoId] = useState(null);
@@ -150,7 +144,6 @@ export default function Dashboard() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
   
-  // Single chatbot ref
   const chatMessagesRef = useRef(null);
   const logsContainerRef = useRef(null);
   const statusCheckInterval = useRef(null);
@@ -199,7 +192,6 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Adding back the missing function definitions
   const fetchVideos = async () => {
     setIsLoading(true);
     try {
@@ -245,6 +237,10 @@ export default function Dashboard() {
     }
   };
 
+  const generateRandomVideoId = () => {
+    return `video_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  };
+
   const handleAnalyzeVideo = async () => {
     if (!uploadedFile) {
       setError('Please select a file to upload');
@@ -252,30 +248,32 @@ export default function Dashboard() {
     }
 
     setIsUploading(true);
+    setIsAnalyzing(true);
     setUploadProgress(0);
+    setProcessingProgress(0);
     setError(null);
     setProcessingLogs([]);
-    setIsAnalyzing(false);
-    const formData = new FormData();
-    formData.append('file', uploadedFile);
     
-    // Generate video ID
-    const videoId = `video_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    formData.append('video_id', videoId);
+    // Generate a unique video ID for this upload
+    const videoId = generateRandomVideoId();
     setCurrentVideoId(videoId);
-    
+
     try {
-      const onUploadProgress = (progressEvent) => {
-        const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-        setUploadProgress(percentCompleted);
-      };
-      
-      // Upload the video
-      const response = await api.post('/video/upload', formData, {
+      const formData = new FormData();
+      formData.append('file', uploadedFile);
+      formData.append('video_id', videoId);
+
+      // Use the combined endpoint
+      const response = await api.post('/video/upload_and_analyze', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        onUploadProgress,
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = Math.round(
+            (progressEvent.loaded * 100) / progressEvent.total
+          );
+          setUploadProgress(percentCompleted);
+        },
       });
 
       setMessages([
@@ -291,54 +289,94 @@ export default function Dashboard() {
         ]);
       }
       
-      // Start tracking analysis status
-      setIsAnalyzing(true);
+      // Start fetching logs every second
+      if (logsCheckInterval.current) {
+        clearInterval(logsCheckInterval.current);
+      }
+      logsCheckInterval.current = setInterval(fetchLogs, 1000);
+      
+      // Start checking status
+      if (statusCheckInterval.current) {
+        clearInterval(statusCheckInterval.current);
+      }
+
       statusCheckInterval.current = setInterval(async () => {
         try {
-          const statusResponse = await api.get(`/video/${videoId}/status`);
-          setAnalysisStatus(statusResponse.data);
-          setProcessingProgress(statusResponse.data.progress);
+          const response = await api.get('/video/status');
+          setAnalysisStatus(response.data);
           
-          if (!statusResponse.data.processing && statusResponse.data.has_data) {
+          // Update progress state
+          if (response.data.progress !== undefined) {
+            setProcessingProgress(response.data.progress);
+          }
+          
+          if (!response.data.processing && response.data.has_data) {
             setMessages(prevMessages => [
               ...prevMessages,
               { text: 'Video analysis complete! You can now chat with the AI about the video content.', sender: 'bot' },
             ]);
-            
+            setIsAnalyzing(false); // Important: stop the loading indicator
+            setIsUploading(false); // Also stop upload indicator
+            setProcessingProgress(100); // Set progress to 100% when done
             clearInterval(statusCheckInterval.current);
             clearInterval(logsCheckInterval.current);
+            
+            // Refresh video list to show the new video
+            fetchVideos();
           }
         } catch (err) {
           console.error('Error checking analysis status:', err);
-          clearInterval(statusCheckInterval.current);
         }
-      }, 5000);
-      
-      // Start tracking logs
-      logsCheckInterval.current = setInterval(fetchLogs, 3000);
+      }, 3000);
       
     } catch (err) {
-      console.error('Error uploading video:', err);
+      setError(err.response?.data?.detail || 'Failed to process video');
       setIsUploading(false);
-      setError(err.response?.data?.detail || 'Failed to upload video');
-      setMessages([
-        ...messages,
-        { text: `Error: ${err.response?.data?.detail || 'Failed to upload and analyze video'}`, sender: 'bot' },
-      ]);
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleChatSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (!chatInput.trim()) return;
+    
+    const userMessage = { text: chatInput, sender: 'user' };
+    setMessages([...messages, userMessage]);
+    const question = chatInput;
+    setChatInput('');
+    
+    try {
+      // For ongoing processing, use the initial VLM assessment
+      // Even if vectorstore isn't fully ready
+      const response = await api.post('/video/chat', { 
+        question,
+        video_id: videoDetails?.video_id || currentVideoId 
+      });
+      const botMessage = { text: response.data.answer, sender: 'bot' };
+      setMessages(prev => [...prev, botMessage]);
+    } catch (err) {
+      console.error('Chat error:', err);
+      setMessages(prev => [...prev, { 
+        text: err.response?.data?.detail || 'Failed to get a response. The system might still be processing the video.', 
+        sender: 'bot' 
+      }]);
     }
   };
 
   const handleReset = () => {
+    // Allow the user to upload and analyze a new video
     setUploadedFile(null);
-    setUploadProgress(0);
-    setError(null);
-    setProcessingLogs([]);
     setIsAnalyzing(false);
-    setAnalysisStatus(null);
-    setCurrentVideoId(null);
+    setIsUploading(false);
+    setUploadProgress(0);
+    setProcessingProgress(0);
+    setProcessingLogs([]);
+    // Keep chat history
   };
 
   const fetchVideoLogs = async (videoId) => {
+    setIsLoading(true);
     try {
       const response = await api.get(`/video/${videoId}/logs`);
       if (response.data && response.data.logs) {
@@ -346,7 +384,9 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error('Error fetching video logs:', err);
-      setVideoLogs([]);
+      setError('Failed to load video logs');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -354,34 +394,40 @@ export default function Dashboard() {
     setIsDeleting(true);
     try {
       await api.delete(`/video/${videoId}`);
-      setDeleteConfirmOpen(false);
+      // Remove the deleted video from the list
+      setVideos(videos.filter(v => v.video_id !== videoId));
+      // Close dialog if open
       setDialogOpen(false);
-      fetchVideos();
+      // Show success message
+      alert('Video deleted successfully');
     } catch (err) {
       console.error('Error deleting video:', err);
       setError('Failed to delete video');
     } finally {
       setIsDeleting(false);
+      setDeleteConfirmOpen(false);
     }
   };
 
   const handleVideoClick = (video, event) => {
-    if (event.target.closest('.delete-button')) {
+    // Check if delete button was clicked
+    if (event?.target?.closest('.delete-button')) {
+      event.stopPropagation();
+      setSelectedVideo(video);
+      setDeleteConfirmOpen(true);
       return;
     }
-    
+
     setSelectedVideo(video);
-    setDialogOpen(true);
-    setDialogTab(0);
     fetchVideoDetails(video.video_id);
     fetchVideoLogs(video.video_id);
-    setDialogChatMessages([]);
+    setDialogOpen(true);
   };
 
   const handleDialogClose = () => {
     setDialogOpen(false);
-    setSelectedVideo(null);
-    setVideoDetails(null);
+    setDialogTab(0);
+    setDialogChatMessages([]);
   };
 
   const handleDialogTabChange = (event, newValue) => {
@@ -442,38 +488,6 @@ export default function Dashboard() {
 
   const handleCloseMenu = () => {
     setAnchorEl(null);
-  };
-
-  // Single chat submit handler
-  const handleChatSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (!chatInput.trim() || !currentVideoId) return;
-    
-    const userMessage = { text: chatInput, sender: 'user' };
-    setMessages([...messages, userMessage]);
-    const question = chatInput;
-    setChatInput('');
-    
-    setIsChatLoading(true);
-    
-    try {
-      const response = await api.post('/video/chat', { 
-        question, 
-        video_id: currentVideoId
-      });
-      
-      const botMessage = { text: response.data.answer, sender: 'bot' };
-      setMessages(prev => [...prev, botMessage]);
-    } catch (err) {
-      console.error('Chat error:', err);
-      setMessages(prev => [...prev, { 
-        text: 'Sorry, I could not process your request at this time.', 
-        sender: 'bot' 
-      }]);
-    } finally {
-      setIsChatLoading(false);
-    }
   };
 
   return (
@@ -635,10 +649,92 @@ export default function Dashboard() {
                   </Box>
                 )}
               </Box>
+              
+              <Divider sx={{ my: 3 }} />
+              
+              <Box>
+                <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
+                  <VideoLibraryIcon sx={{ mr: 1 }} />
+                  Your Videos
+                </Typography>
+                
+                {isLoading ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : (
+                  <VideoGrid container spacing={2}>
+                    {videos.length > 0 ? (
+                      videos.map((video) => (
+                        <Grid item xs={12} sm={6} key={video.id}>
+                          <Card sx={{ cursor: 'pointer' }} onClick={(e) => handleVideoClick(video, e)}>
+                            <CardMedia
+                              component="img"
+                              height="140"
+                              image={video.thumbnail_url || '/placeholder-video.jpg'}
+                              alt={video.filename}
+                            />
+                            <CardContent>
+                              <Typography gutterBottom variant="h6" noWrap>
+                                {video.filename}
+                              </Typography>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                                <Typography variant="body2" color="text.secondary">
+                                  {formatDuration(video.duration_seconds)}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {formatBytes(video.size_bytes)}
+                                </Typography>
+                              </Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <Box>
+                                  <Chip 
+                                    label={video.status} 
+                                    size="small" 
+                                    color={video.status === 'completed' ? 'success' : 'warning'} 
+                                    variant="outlined"
+                                  />
+                                  {video.alert_count > 0 && (
+                                    <Chip
+                                      icon={<WarningIcon />}
+                                      label={`${video.alert_count} alert${video.alert_count > 1 ? 's' : ''}`}
+                                      size="small"
+                                      color="error"
+                                      sx={{ ml: 1 }}
+                                    />
+                                  )}
+                                </Box>
+                                <IconButton 
+                                  size="small" 
+                                  color="error" 
+                                  className="delete-button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedVideo(video);
+                                    setDeleteConfirmOpen(true);
+                                  }}
+                                >
+                                  <DeleteIcon />
+                                </IconButton>
+                              </Box>
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                      ))
+                    ) : (
+                      <Grid item xs={12}>
+                        <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                          No videos available. Upload and analyze a video to see it here.
+                        </Typography>
+                      </Grid>
+                    )}
+                  </VideoGrid>
+                )}
+              </Box>
             </Paper>
           </Grid>
           
-          {/* Right side: Single Chatbot */}
+          {/* Right side: Chat with AI */}
           <Grid item xs={12} md={6}>
             <Paper sx={{ p: 3, height: '100%', display: 'flex', flexDirection: 'column' }}>
               <Typography variant="h5" gutterBottom>
@@ -666,15 +762,14 @@ export default function Dashboard() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   sx={{ mr: 2 }}
-                  disabled={isChatLoading}
                 />
                 <Button
                   type="submit"
                   variant="contained"
-                  endIcon={isChatLoading ? <CircularProgress size={16} color="inherit" /> : <SendIcon />}
-                  disabled={!chatInput.trim() || !currentVideoId || isChatLoading}
+                  endIcon={<SendIcon />}
+                  disabled={!chatInput.trim()}
                 >
-                  {isChatLoading ? 'Thinking' : 'Send'}
+                  Send
                 </Button>
               </Box>
             </Paper>
@@ -841,12 +936,24 @@ export default function Dashboard() {
                 Delete Video
               </Button>
               {videoDetails && (
-                <Button 
-                  variant="outlined"
-                  onClick={handleStartNewDialogChat}
-                >
-                  Chat with this Video
-                </Button>
+                <>
+                  <Button 
+                    variant="outlined"
+                    onClick={handleStartNewDialogChat}
+                  >
+                    Chat with this Video
+                  </Button>
+                  <Button 
+                    variant="contained" 
+                    onClick={() => {
+                      setDialogOpen(false);
+                      setCurrentVideoId(videoDetails.video_id);
+                      setMessages([]);
+                    }}
+                  >
+                    Use in Main Chat
+                  </Button>
+                </>
               )}
             </DialogActions>
           </>
@@ -880,4 +987,4 @@ export default function Dashboard() {
       </Dialog>
     </Box>
   );
-}
+} 
